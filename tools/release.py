@@ -5,7 +5,8 @@ Usage:
 
 Steps: download the stock ``warp-lang`` wheel of the fork's version, build the core library in the
 fork, generate the overlay (``tools/generate.py``), build the wheel, install it next to the stock
-package in a fresh virtual environment and run ``tools/smoke_test.py``. With ``--publish`` the wheel
+package in a fresh virtual environment and run ``tools/smoke_test.py`` and, with ``--parity MODEL...``,
+``tools/physics_parity.py``, which steps MuJoCo Warp models on the CPU and on Metal and compares them. With ``--publish`` the wheel
 is then attached to a GitHub prerelease named after its version and tagged on ``HEAD``; that needs the
 release commit (the version and pin that ``generate.py`` writes to ``pyproject.toml``) to exist already,
 so run once without ``--publish``, commit, and run again with it. Needs macOS on Apple Silicon, ``uv``
@@ -14,6 +15,7 @@ and, for ``--publish``, ``gh``.
 
 import argparse
 import glob
+import hashlib
 import os
 import shutil
 import subprocess
@@ -42,6 +44,18 @@ def main():
         help="two digits; start at 01 for each Warp version",
     )
     ap.add_argument(
+        "--parity",
+        nargs="+",
+        metavar="MODEL",
+        default=[],
+        help="MuJoCo models for tools/physics_parity.py (CPU against Metal); required with --publish",
+    )
+    ap.add_argument(
+        "--mujoco-warp",
+        default="mujoco-warp @ git+https://github.com/DavidDobas/mujoco_warp@metal-3.11",
+        help="MuJoCo Warp requirement installed for the parity check",
+    )
+    ap.add_argument(
         "--skip-build",
         action="store_true",
         help="use the fork's existing warp/bin/libwarp.dylib",
@@ -52,7 +66,14 @@ def main():
         help="create the GitHub prerelease and upload the wheel",
     )
     args = ap.parse_args()
+    if args.publish and not args.parity:
+        sys.exit("error: --publish needs --parity MODEL...; a wheel is not released without the physics check")
     fork = os.path.abspath(args.fork)
+    # the check runs from a temporary directory, so make the model paths absolute
+    parity_models = [
+        os.path.abspath(m[: -len("+floor")]) + "+floor" if m.endswith("+floor") else os.path.abspath(m)
+        for m in args.parity
+    ]
     with open(os.path.join(fork, "VERSION.md")) as f:
         warp_version = f.read().strip()
 
@@ -95,6 +116,11 @@ def main():
         python = os.path.join(env, "bin", "python")
         run(["uv", "pip", "install", "--python", python, *install_index, wheel_path])
         run([python, os.path.join(ROOT, "tools", "smoke_test.py")], cwd=tmp)
+        if parity_models:
+            # the physics must agree with the CPU on real models, see tools/physics_parity.py
+            run(["uv", "pip", "install", "--python", python, *install_index, args.mujoco_warp])
+            report = os.path.join(ROOT, "dist", "physics_parity.txt")
+            run([python, os.path.join(ROOT, "tools", "physics_parity.py"), "--report", report, *parity_models], cwd=tmp)
 
     print(f"\nbuilt and tested {wheel_path}")
     if args.publish:
@@ -103,9 +129,17 @@ def main():
         if f'version = "{version}"' not in committed:
             sys.exit(f"error: HEAD does not declare version {version}; commit pyproject.toml before publishing")
         target = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip()
+        with open(wheel_path, "rb") as f:
+            wheel_sha256 = hashlib.sha256(f.read()).hexdigest()
+        with open(os.path.join(ROOT, "dist", "physics_parity.txt")) as f:
+            parity_report = f.read()
         notes = (
             f"Overlays warp-lang {warp_version}. Built from the Warp fork at "
-            f"https://github.com/innate-inc/warp/commit/{fork_commit(fork)}."
+            f"https://github.com/innate-inc/warp/commit/{fork_commit(fork)}.\n\n"
+            f"SHA-256 of `{os.path.basename(wheel_path)}`, which the file published to PyPI must match:\n\n"
+            f"```\n{wheel_sha256}\n```\n\n"
+            "Physics parity against the CPU and against MuJoCo (tools/physics_parity.py), run on this wheel in a "
+            f"clean environment:\n\n```\n{parity_report}```\n"
         )
         run(
             ["gh", "release", "create", f"v{version}", wheel_path, "--prerelease", "--target", target,
