@@ -72,10 +72,11 @@ def main():
     if not wp.is_metal_available():
         sys.exit("error: no Metal device; is the warp-metal overlay active?")
 
-    lines = [
+    header = (
         f"warp {wp.config.version}, mujoco {mujoco.__version__}, mujoco_warp {getattr(mjw, '__version__', '?')}, "
         f"device {wp.get_device('metal:0').name}, {args.steps} steps"
-    ]
+    )
+    lines = [header]
     failures, sizes, contacts = 0, [], False
     for path in args.models:
         name = os.path.join(os.path.basename(os.path.dirname(path)), os.path.basename(path))
@@ -129,7 +130,7 @@ def main():
     lines.append(verdict or f"parity holds for {len(sizes)} models")
     if args.report:
         with open(args.report, "w") as f:
-            f.write("\n".join([lines[0], *lines[1:]]) + "\n")
+            f.write("\n".join(lines) + "\n")
     if verdict:
         sys.exit(verdict)
     print(lines[-1])
