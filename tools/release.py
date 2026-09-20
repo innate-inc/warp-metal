@@ -15,6 +15,7 @@ and, for ``--publish``, ``gh``.
 
 import argparse
 import glob
+import hashlib
 import os
 import shutil
 import subprocess
@@ -118,7 +119,8 @@ def main():
         if parity_models:
             # the physics must agree with the CPU on real models, see tools/physics_parity.py
             run(["uv", "pip", "install", "--python", python, *install_index, args.mujoco_warp])
-            run([python, os.path.join(ROOT, "tools", "physics_parity.py"), *parity_models], cwd=tmp)
+            report = os.path.join(ROOT, "dist", "physics_parity.txt")
+            run([python, os.path.join(ROOT, "tools", "physics_parity.py"), "--report", report, *parity_models], cwd=tmp)
 
     print(f"\nbuilt and tested {wheel_path}")
     if args.publish:
@@ -127,9 +129,17 @@ def main():
         if f'version = "{version}"' not in committed:
             sys.exit(f"error: HEAD does not declare version {version}; commit pyproject.toml before publishing")
         target = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip()
+        with open(wheel_path, "rb") as f:
+            wheel_sha256 = hashlib.sha256(f.read()).hexdigest()
+        with open(os.path.join(ROOT, "dist", "physics_parity.txt")) as f:
+            parity_report = f.read()
         notes = (
             f"Overlays warp-lang {warp_version}. Built from the Warp fork at "
-            f"https://github.com/innate-inc/warp/commit/{fork_commit(fork)}."
+            f"https://github.com/innate-inc/warp/commit/{fork_commit(fork)}.\n\n"
+            f"SHA-256 of `{os.path.basename(wheel_path)}`, which the file published to PyPI must match:\n\n"
+            f"```\n{wheel_sha256}\n```\n\n"
+            "Physics parity against the CPU and against MuJoCo (tools/physics_parity.py), run on this wheel in a "
+            f"clean environment:\n\n```\n{parity_report}```\n"
         )
         run(
             ["gh", "release", "create", f"v{version}", wheel_path, "--prerelease", "--target", target,
