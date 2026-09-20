@@ -123,6 +123,10 @@ python tools/release.py <fork checkout> --revision 01
    ignored by git),
 4. builds the wheel, installs it next to the stock package in a fresh environment and runs
    `tools/smoke_test.py` on the GPU.
+5. with `--parity MODEL...`, steps MuJoCo Warp models on the CPU and on Metal and compares the state
+   (`tools/physics_parity.py`). The models must include more than 32 and more than 64 degrees of
+   freedom and active contacts, and `--publish` refuses to run without this check: a factorization bug
+   that only showed above 32 degrees of freedom was once found just before the first PyPI upload.
 
 Publishing to PyPI is a separate, manual step: the `Publish to PyPI` workflow uploads the wheel attached to a
 GitHub release after checking its SHA-256, through PyPI trusted publishing, so no token is stored.

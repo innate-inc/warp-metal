@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "warp-metal"
-version = "1.17.0.2"
+version = "1.17.0.3"
 description = "Apple Metal backend for NVIDIA Warp: run Warp kernels on Apple Silicon GPUs"
 readme = "README.md"
 license = "Apache-2.0"
