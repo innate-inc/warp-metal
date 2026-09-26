@@ -13,7 +13,7 @@ Four checks per model:
    and Metal runs share the overlay's code, so only an outside reference can catch a defect they have in
    common.
 2. The acceleration of one Metal forward at 8 random states (perturbed positions, random velocities and
-   controls) against ``mj_forward``, within 2e-2 relative. Not chaotic, so it is the sharp check: the
+   controls) against ``mj_forward``, within 5e-3 relative. Not chaotic, so it is the sharp check: the
    32 < nv <= 40 Cholesky bug of 1.17.0.2 gives errors of about 20 on the G1.
 3. Positions and velocities after ``--steps`` steps, Metal against the CPU. Contact-rich models are chaotic,
    so the tolerance is the larger of the fixed one and 3 times the spread of CPU runs whose velocities were
@@ -46,7 +46,7 @@ QACC_RTOL, QACC_ATOL = 1e-3, 1e-4  # first step against MuJoCo (C); both devices
 QPOS_ATOL = 1e-3  # after --steps steps; contact-rich models drift chaotically beyond that
 QVEL_RTOL, QVEL_ATOL = 2e-2, 1e-4  # the absolute floor keeps a model at rest from failing on noise
 CHAOS_RUNS, CHAOS_NOISE, CHAOS_FACTOR = 4, 1e-7, 3.0  # perturbed CPU runs that measure a model's sensitivity
-RANDOM_WORLDS, RANDOM_QACC_RTOL = 8, 2e-2  # random states, one forward each, against mj_forward
+RANDOM_WORLDS, RANDOM_QACC_RTOL = 8, 5e-3  # random states, one forward each, against mj_forward; good builds <= 2.2e-3
 
 
 def load(path):
