@@ -6,7 +6,9 @@ Usage:
 Steps: download the stock ``warp-lang`` wheel of the fork's version, build the core library in the
 fork, generate the overlay (``tools/generate.py``), build the wheel, install it next to the stock
 package in a fresh virtual environment and run ``tools/smoke_test.py`` and, with ``--parity MODEL...``,
-``tools/physics_parity.py``, which steps MuJoCo Warp models on the CPU and on Metal and compares them. With ``--publish`` the wheel
+``tools/check.py`` (the fork's stub check and Metal tests, MuJoCo Warp's solver and size tests, the physics
+gate and the IR audit; a failure stops the release) and the informational ``tools/perf_report.py``. The fork's
+``tools/check_metal_stub.py`` also runs before anything is built. With ``--publish`` the wheel
 is then attached to a GitHub prerelease named after its version and tagged on ``HEAD``; that needs the
 release commit (the version and pin that ``generate.py`` writes to ``pyproject.toml``) to exist already,
 so run once without ``--publish``, commit, and run again with it. Needs macOS on Apple Silicon, ``uv``
@@ -25,6 +27,8 @@ import zipfile
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 NVIDIA_INDEX = "https://pypi.nvidia.com"  # nightlies; releases come from PyPI
+# checks of tools/check.py that may only be skipped with --allow-skip, by their --allow-skip name
+REQUIRED_CHECKS = {"stub": "stub", "size-tests": "mujoco_warp size tests", "ir-audit": "ir audit"}
 
 
 def run(cmd, cwd=None):
@@ -61,6 +65,13 @@ def main():
         help="use the fork's existing warp/bin/libwarp.dylib",
     )
     ap.add_argument(
+        "--allow-skip",
+        action="append",
+        default=[],
+        choices=list(REQUIRED_CHECKS),
+        help="let this check be skipped (it is then named in the release notes); all three are required otherwise",
+    )
+    ap.add_argument(
         "--publish",
         action="store_true",
         help="create the GitHub prerelease and upload the wheel",
@@ -86,6 +97,13 @@ def main():
         if nightly
         else []
     )
+
+    # builds without Metal must keep every symbol Warp binds; stop before building anything if they would not
+    stub_check = os.path.join(fork, "tools", "check_metal_stub.py")
+    if os.path.exists(stub_check):
+        run([sys.executable, stub_check, fork])
+    elif "stub" not in args.allow_skip:
+        sys.exit("error: the fork has no tools/check_metal_stub.py; pass --allow-skip stub to release without it")
 
     with tempfile.TemporaryDirectory() as tmp:
         # stock wheel: what the overlay is compared against and what users will have installed
@@ -117,10 +135,16 @@ def main():
         run(["uv", "pip", "install", "--python", python, *install_index, wheel_path])
         run([python, os.path.join(ROOT, "tools", "smoke_test.py")], cwd=tmp)
         if parity_models:
-            # the physics must agree with the CPU on real models, see tools/physics_parity.py
-            run(["uv", "pip", "install", "--python", python, *install_index, args.mujoco_warp])
-            report = os.path.join(ROOT, "dist", "physics_parity.txt")
-            run([python, os.path.join(ROOT, "tools", "physics_parity.py"), "--report", report, *parity_models], cwd=tmp)
+            # every check, including the physics gate, in this clean environment; see tools/check.py
+            run(["uv", "pip", "install", "--python", python, *install_index, args.mujoco_warp, "pytest"])
+            run(
+                [sys.executable, os.path.join(ROOT, "tools", "check.py"), fork, *parity_models, "--python", python,
+                 *[a for key, name in REQUIRED_CHECKS.items() if key not in args.allow_skip for a in ("--require", name)],
+                 "--report", os.path.join(ROOT, "dist", "check.txt"),
+                 "--parity-report", os.path.join(ROOT, "dist", "physics_parity.txt")],
+                cwd=tmp,
+            )  # fmt: skip
+            write_perf_report(python, parity_models, os.path.join(ROOT, "dist", "perf.txt"), tmp)
 
     print(f"\nbuilt and tested {wheel_path}")
     if args.publish:
@@ -133,19 +157,53 @@ def main():
             wheel_sha256 = hashlib.sha256(f.read()).hexdigest()
         with open(os.path.join(ROOT, "dist", "physics_parity.txt")) as f:
             parity_report = f.read()
+        with open(os.path.join(ROOT, "dist", "check.txt")) as f:
+            check_report = f.read()
+        with open(os.path.join(ROOT, "dist", "perf.txt")) as f:
+            perf_report = f.read()
         notes = (
             f"Overlays warp-lang {warp_version}. Built from the Warp fork at "
             f"https://github.com/innate-inc/warp/commit/{fork_commit(fork)}.\n\n"
             f"SHA-256 of `{os.path.basename(wheel_path)}`, which the file published to PyPI must match:\n\n"
             f"```\n{wheel_sha256}\n```\n\n"
             "Physics parity against the CPU and against MuJoCo (tools/physics_parity.py), run on this wheel in a "
-            f"clean environment:\n\n```\n{parity_report}```\n"
+            f"clean environment:\n\n```\n{parity_report}```\n\n"
+            f"All checks (tools/check.py) on this wheel:\n\n```\n{check_report}```\n\n"
+            + (
+                "Checks allowed to be skipped for this release (--allow-skip): "
+                + ", ".join(REQUIRED_CHECKS[k] for k in args.allow_skip)
+                + "\n\n"
+                if args.allow_skip
+                else ""
+            )
+            + "Physics step timing (tools/perf_report.py; informational, depends on other GPU load):\n\n"
+            f"```\n{perf_report}```\n"
         )
         run(
             ["gh", "release", "create", f"v{version}", wheel_path, "--prerelease", "--target", target,
              "--title", f"warp-metal {version}", "--notes", notes],
             cwd=ROOT,
         )  # fmt: skip
+
+
+def write_perf_report(python, models, path, cwd):
+    """The G1 timing for the release notes; never stops a release."""
+    model = next((m for m in models if "g1" in os.path.basename(m.removesuffix("+floor")).lower()), None)
+    if model is None:
+        text = "no G1 model among the parity models; nothing measured\n"
+    else:
+        result = subprocess.run(
+            [python, os.path.join(ROOT, "tools", "perf_report.py"), model],
+            cwd=cwd,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        lines = [line for line in result.stdout.splitlines() if not line.startswith(("Module ", "Warp "))]
+        text = "\n".join(lines) + "\n" if result.returncode == 0 else f"perf report failed:\n{result.stderr[-2000:]}\n"
+    with open(path, "w") as f:
+        f.write(text)
+    print(text)
 
 
 def require_release_commit():

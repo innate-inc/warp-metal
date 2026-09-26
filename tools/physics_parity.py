@@ -131,10 +131,11 @@ def main():
     ap.add_argument("models", nargs="+")
     ap.add_argument("--steps", type=int, default=60)
     ap.add_argument("--report", help="also write the report to this file")
+    ap.add_argument("--kernel-cache", help="generate kernels into this (empty) directory instead of a temporary one")
     args = ap.parse_args()
     wp.config.quiet = True
     # generate every module afresh, so the code generator's Metal rewrites below are all seen and counted
-    wp.config.kernel_cache_dir = tempfile.mkdtemp(prefix="warp-parity-")
+    wp.config.kernel_cache_dir = args.kernel_cache or tempfile.mkdtemp(prefix="warp-parity-")
     if not wp.is_metal_available():
         sys.exit("error: no Metal device; is the warp-metal overlay active?")
 
