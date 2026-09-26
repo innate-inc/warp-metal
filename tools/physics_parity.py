@@ -15,6 +15,11 @@ Three checks per model:
 2. Positions and velocities after ``--steps`` steps, Metal against the CPU.
 3. The largest number of active constraints seen, which must be equal.
 
+The report also lists which kernels Warp's Metal code generator compiled with the fused register Cholesky
+(Adjoint._match_metal_fused_cholesky), and the run fails if a Newton model with at most 40 degrees of freedom
+ran but MuJoCo Warp's solver Cholesky kernel no longer took that path. The run uses a fresh kernel cache so
+every module is generated and counted.
+
 A run fails unless the models include one with more than 32 and one with more than 64 degrees of freedom and
 at least one active constraint: a factorization bug that only showed above 32 degrees of freedom once shipped
 in five wheels, while the test suites passed and the robot "trained".
@@ -24,6 +29,7 @@ import argparse
 import hashlib
 import os
 import sys
+import tempfile
 
 import mujoco
 import mujoco_warp as mjw
@@ -69,6 +75,8 @@ def main():
     ap.add_argument("--report", help="also write the report to this file")
     args = ap.parse_args()
     wp.config.quiet = True
+    # generate every module afresh, so the code generator's Metal rewrites below are all seen and counted
+    wp.config.kernel_cache_dir = tempfile.mkdtemp(prefix="warp-parity-")
     if not wp.is_metal_available():
         sys.exit("error: no Metal device; is the warp-metal overlay active?")
 
@@ -78,6 +86,7 @@ def main():
     )
     lines = [header]
     failures, sizes, contacts = 0, [], False
+    expect_fused = False  # a Newton model small enough for the register Cholesky ran on Metal
     for path in args.models:
         name = os.path.join(os.path.basename(os.path.dirname(path)), os.path.basename(path))
         mjm, digest = load(path)
@@ -112,6 +121,7 @@ def main():
 
         failures += bool(problems)
         sizes.append(mjm.nv)
+        expect_fused |= mjm.nv <= 40 and mjm.opt.solver == mujoco.mjtSolver.mjSOL_NEWTON
         contacts |= nefc_cpu > 0
         lines.append(
             f"{'ok      ' if not problems else 'MISMATCH'} {name} [{digest}]: nv {mjm.nv}, nefc {nefc_cpu}/{nefc_gpu}, "
@@ -120,6 +130,18 @@ def main():
         )
         print(lines[-1], flush=True)
 
+    # Warp's Metal code generator runs MuJoCo Warp's dense solver Cholesky from registers when the kernel has the
+    # exact load / factor / solve shape it matches (codegen.py, Adjoint._match_metal_fused_cholesky). A MuJoCo
+    # Warp change to that kernel would silently lose the speedup, so the gate checks that it still matched.
+    rewrites = getattr(getattr(wp._src.codegen, "Adjoint", None), "metal_fused_cholesky_rewrites", None)
+    solver_fused = 0
+    if rewrites is None:
+        lines.append("metal fused Cholesky: not in this Warp build")
+    else:
+        solver_fused = sum(n for key, n in rewrites.items() if key.startswith("_update_gradient_cholesky."))
+        lines.append("metal fused Cholesky: " + (", ".join(f"{k} x{n}" for k, n in sorted(rewrites.items())) or "none"))
+    print(lines[-1], flush=True)
+
     verdict = None
     if not any(32 < nv <= 64 for nv in sizes) or not any(nv > 64 for nv in sizes):
         verdict = f"error: model sizes {sorted(sizes)} do not cover both 32 < nv <= 64 and nv > 64"
@@ -127,6 +149,11 @@ def main():
         verdict = "error: no model had an active constraint; add a scene with contacts or a +floor model"
     elif failures:
         verdict = f"FAILED: {failures} of {len(sizes)} models"
+    elif rewrites is not None and expect_fused and not solver_fused:
+        verdict = (
+            "FAILED: MuJoCo Warp's solver Cholesky kernel (_update_gradient_cholesky) no longer matches Warp's Metal "
+            "fused-Cholesky rewrite, so it would run without it; see Adjoint._match_metal_fused_cholesky"
+        )
     lines.append(verdict or f"parity holds for {len(sizes)} models")
     if args.report:
         with open(args.report, "w") as f:
