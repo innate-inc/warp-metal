@@ -17,7 +17,8 @@ Three checks per model:
 
 The report also lists which kernels Warp's Metal code generator compiled with the fused register Cholesky
 (Adjoint._match_metal_fused_cholesky), and the run fails if a Newton model with at most 40 degrees of freedom
-ran but MuJoCo Warp's solver Cholesky kernel no longer took that path. The run uses a fresh kernel cache so
+ran but MuJoCo Warp's solver Cholesky kernel no longer took that path, or a model with a gathered mass-matrix
+block of at most 40 degrees of freedom ran but the block factorization kernel no longer took it. The run uses a fresh kernel cache so
 every module is generated and counted.
 
 A run fails unless the models include one with more than 32 and one with more than 64 degrees of freedom and
@@ -87,6 +88,7 @@ def main():
     lines = [header]
     failures, sizes, contacts = 0, [], False
     expect_fused = False  # a Newton model small enough for the register Cholesky ran on Metal
+    expect_block_fused = False  # a model with a gathered mass-matrix block the register Cholesky can take
     for path in args.models:
         name = os.path.join(os.path.basename(os.path.dirname(path)), os.path.basename(path))
         mjm, digest = load(path)
@@ -122,6 +124,9 @@ def main():
         failures += bool(problems)
         sizes.append(mjm.nv)
         expect_fused |= mjm.nv <= 40 and mjm.opt.solver == mujoco.mjtSolver.mjSOL_NEWTON
+        with wp.ScopedDevice("cpu"):
+            tiles = getattr(mjw.put_model(mjm), "M_tiles", ())
+        expect_block_fused |= any(t.size <= 40 and t.elemid.size > 0 for t in tiles)
         contacts |= nefc_cpu > 0
         lines.append(
             f"{'ok      ' if not problems else 'MISMATCH'} {name} [{digest}]: nv {mjm.nv}, nefc {nefc_cpu}/{nefc_gpu}, "
@@ -134,11 +139,12 @@ def main():
     # exact load / factor / solve shape it matches (codegen.py, Adjoint._match_metal_fused_cholesky). A MuJoCo
     # Warp change to that kernel would silently lose the speedup, so the gate checks that it still matched.
     rewrites = getattr(getattr(wp._src.codegen, "Adjoint", None), "metal_fused_cholesky_rewrites", None)
-    solver_fused = 0
+    solver_fused = block_fused = 0
     if rewrites is None:
         lines.append("metal fused Cholesky: not in this Warp build")
     else:
         solver_fused = sum(n for key, n in rewrites.items() if key.startswith("_update_gradient_cholesky."))
+        block_fused = sum(n for key, n in rewrites.items() if key.startswith("_tile_cholesky_factorize_solve_block."))
         lines.append("metal fused Cholesky: " + (", ".join(f"{k} x{n}" for k, n in sorted(rewrites.items())) or "none"))
     print(lines[-1], flush=True)
 
@@ -153,6 +159,12 @@ def main():
         verdict = (
             "FAILED: MuJoCo Warp's solver Cholesky kernel (_update_gradient_cholesky) no longer matches Warp's Metal "
             "fused-Cholesky rewrite, so it would run without it; see Adjoint._match_metal_fused_cholesky"
+        )
+    elif rewrites is not None and expect_block_fused and not block_fused:
+        verdict = (
+            "FAILED: MuJoCo Warp's block factorization kernel (_tile_cholesky_factorize_solve_block) no longer "
+            "matches Warp's Metal fused-Cholesky rewrite, so it would run without it; see "
+            "Adjoint._match_metal_fused_cholesky"
         )
     lines.append(verdict or f"parity holds for {len(sizes)} models")
     if args.report:
