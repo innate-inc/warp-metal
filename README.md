@@ -123,10 +123,40 @@ python tools/release.py <fork checkout> --revision 01
    ignored by git),
 4. builds the wheel, installs it next to the stock package in a fresh environment and runs
    `tools/smoke_test.py` on the GPU.
-5. with `--parity MODEL...`, steps MuJoCo Warp models on the CPU and on Metal and compares the state
-   (`tools/physics_parity.py`). The models must include more than 32 and more than 64 degrees of
-   freedom and active contacts, and `--publish` refuses to run without this check: a factorization bug
-   that only showed above 32 degrees of freedom was once found just before the first PyPI upload.
+5. with `--parity MODEL...`, runs every check in that environment (`tools/check.py`, below) and stops if
+   one fails, then measures the G1 physics step for the release notes (`tools/perf_report.py`,
+   informational). The models must include more than 32 and more than 64 degrees of freedom and active
+   contacts, and `--publish` refuses to run without them: a factorization bug that only showed above 32
+   degrees of freedom was once found just before the first PyPI upload.
+
+Before step 1, `release.py` also runs the fork's `tools/check_metal_stub.py`, which fails if a build without
+Metal would lack a symbol Warp binds.
+
+### Checking a backend change before merging it
+
+There is no CI with an Apple GPU, so run this before merging a pull request to the fork or to this repository:
+
+```
+python tools/release.py <fork checkout> --revision 99 --skip-build --parity <the models below> \
+    --mujoco-warp "mujoco-warp @ git+https://github.com/DavidDobas/mujoco_warp@metal-3.11"
+git checkout pyproject.toml   # the test build wrote revision 99 there
+```
+
+(leave out `--skip-build` if native sources changed). It builds a throwaway wheel, installs it in a clean
+environment, and runs `tools/check.py`, which prints one summary:
+
+- **stub**: the fork's `tools/check_metal_stub.py`;
+- **smoke**: `tools/smoke_test.py`;
+- **warp metal tests**: the fork's `warp/tests/test_metal.py` against the installed wheel, including the
+  Cholesky threshold sweeps and the guards against 64-bit division and a returning shared Cholesky tile;
+- **mujoco_warp solver tests** and **size tests**: MuJoCo Warp's `solver_test.py` and its
+  `test_solve_m_single_tree` / `test_newton_search_direction`, from the installed package;
+- **physics gate**: `tools/physics_parity.py`;
+- **ir audit**: every Metal module the gate generated, compiled with Xcode's Metal compiler, must be free of
+  64-bit division by a runtime value, which Apple GPUs run in software in every thread.
+
+With an environment already set up, `python tools/check.py <fork checkout> <models> --python <its python>`
+runs the checks alone.
 
 Publishing to PyPI is a separate, manual step: the `Publish to PyPI` workflow uploads the wheel attached to a
 GitHub release after checking its SHA-256, through PyPI trusted publishing, so no token is stored.
