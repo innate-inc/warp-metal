@@ -27,6 +27,8 @@ import zipfile
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 NVIDIA_INDEX = "https://pypi.nvidia.com"  # nightlies; releases come from PyPI
+# checks of tools/check.py that may only be skipped with --allow-skip, by their --allow-skip name
+REQUIRED_CHECKS = {"stub": "stub", "size-tests": "mujoco_warp size tests", "ir-audit": "ir audit"}
 
 
 def run(cmd, cwd=None):
@@ -63,6 +65,13 @@ def main():
         help="use the fork's existing warp/bin/libwarp.dylib",
     )
     ap.add_argument(
+        "--allow-skip",
+        action="append",
+        default=[],
+        choices=list(REQUIRED_CHECKS),
+        help="let this check be skipped (it is then named in the release notes); all three are required otherwise",
+    )
+    ap.add_argument(
         "--publish",
         action="store_true",
         help="create the GitHub prerelease and upload the wheel",
@@ -93,6 +102,8 @@ def main():
     stub_check = os.path.join(fork, "tools", "check_metal_stub.py")
     if os.path.exists(stub_check):
         run([sys.executable, stub_check, fork])
+    elif "stub" not in args.allow_skip:
+        sys.exit("error: the fork has no tools/check_metal_stub.py; pass --allow-skip stub to release without it")
 
     with tempfile.TemporaryDirectory() as tmp:
         # stock wheel: what the overlay is compared against and what users will have installed
@@ -128,6 +139,7 @@ def main():
             run(["uv", "pip", "install", "--python", python, *install_index, args.mujoco_warp, "pytest"])
             run(
                 [sys.executable, os.path.join(ROOT, "tools", "check.py"), fork, *parity_models, "--python", python,
+                 *[a for key, name in REQUIRED_CHECKS.items() if key not in args.allow_skip for a in ("--require", name)],
                  "--report", os.path.join(ROOT, "dist", "check.txt"),
                  "--parity-report", os.path.join(ROOT, "dist", "physics_parity.txt")],
                 cwd=tmp,
@@ -157,7 +169,14 @@ def main():
             "Physics parity against the CPU and against MuJoCo (tools/physics_parity.py), run on this wheel in a "
             f"clean environment:\n\n```\n{parity_report}```\n\n"
             f"All checks (tools/check.py) on this wheel:\n\n```\n{check_report}```\n\n"
-            "Physics step timing (tools/perf_report.py; informational, depends on other GPU load):\n\n"
+            + (
+                "Checks allowed to be skipped for this release (--allow-skip): "
+                + ", ".join(REQUIRED_CHECKS[k] for k in args.allow_skip)
+                + "\n\n"
+                if args.allow_skip
+                else ""
+            )
+            + "Physics step timing (tools/perf_report.py; informational, depends on other GPU load):\n\n"
             f"```\n{perf_report}```\n"
         )
         run(

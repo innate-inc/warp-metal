@@ -19,7 +19,9 @@ Checks, each reported as PASS, FAIL or SKIP:
 6. ir audit: every Metal module the gate generated, compiled with the Metal compiler, must be free of 64-bit
    division by a runtime value (SKIP without xcrun metal).
 
-Exits with status 1 if any check fails. Timing is not checked here (tools/perf_report.py is informational).
+Exits with status 1 if any check fails. ``--require NAME`` makes a SKIP of that check a failure; tools/release.py
+requires the stub check, the size tests and the IR audit unless given ``--allow-skip``. Timing is not checked
+here (tools/perf_report.py is informational).
 """
 
 import argparse
@@ -59,6 +61,13 @@ def main():
     ap.add_argument("--report", help="also write the summary to this file")
     ap.add_argument("--parity-report", help="write the physics gate's report to this file")
     ap.add_argument("--log", help="write every command's output to this file (default: a temporary file)")
+    ap.add_argument(
+        "--require",
+        action="append",
+        default=[],
+        choices=["stub", "mujoco_warp size tests", "ir audit"],
+        help="treat a SKIP of this check as a failure (tools/release.py requires all three)",
+    )
     args = ap.parse_args()
     fork, python = os.path.abspath(args.fork), args.python
     models = [
@@ -71,6 +80,8 @@ def main():
     results = []
 
     def record(name, status, detail, start):
+        if status == "SKIP" and name in args.require:
+            status, detail = "FAIL", f"skipped, but required: {detail}"
         results.append((name, status, detail, time.time() - start))
         print(f"{status:4s}  {name}: {detail}", flush=True)
 
